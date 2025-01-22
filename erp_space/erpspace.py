@@ -69,7 +69,7 @@ class ErpSpace:
                     doc.doctype, doc.name, email, submit=1, flags={"ignore_share_permission": True}
                 )
 
-                 ErpSpace.send_email(email, doc.doctype, doc.name)
+                    ErpSpace.send_email(email, doc.doctype, doc.name)
             
 
 # Create a global instance of ErpSpace
