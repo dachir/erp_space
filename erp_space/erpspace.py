@@ -1,4 +1,5 @@
 import frappe
+from frappe.model.workflow import get_workflow_safe_globals
 
 class ErpSpace:
     def __init__(self):
@@ -13,6 +14,17 @@ class ErpSpace:
         if name in self.functions:
             return self.functions[name](*args, **kwargs)
         raise Exception(f"Function '{name}' is not registered in erpspace.")
+
+    @staticmethod
+    def send_email(email, doctype, docname):
+        frappe.sendmail(
+            recipients=email,
+            subject = f"{doctype} [{docname}]",
+            message = f"""
+            <p>The document <b>{docname}</b> requires your appoval.</p>
+            <p><a href="{frappe.utils.get_url_to_form(doctype, docname)}">View Document</a></p>
+            """
+        )
 
     @staticmethod
     def share_doc(doc):
