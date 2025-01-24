@@ -82,11 +82,10 @@ class ErpSpace:
                     frappe.share.add_docshare(
                         doc.doctype, doc.name, email, submit=1, flags={"ignore_share_permission": True}
                     )
-                    ErpSpace.send_email(email, doc.doctype, doc.name)
+                    #SErpSpace.send_email(email, doc.doctype, doc.name)
                 except Exception as e:
                     frappe.log_error(str(e), f"Error sharing document: {doc.name}")
 
-            #ErpSpace.send_email(email, doc.doctype, doc.name)
             # Process workflow actions
             ErpSpace.custom_process_workflow_actions(doc, doc.workflow_state)
 
