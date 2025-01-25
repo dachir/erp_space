@@ -36,6 +36,7 @@ class ErpSpace:
 
     @staticmethod
     def share_doc(doc):
+        
         """Share a document with users based on workflow state."""
         if doc.workflow_state not in ["Draft", "Rejected"]:
             # Fetch custom role formula
@@ -48,6 +49,8 @@ class ErpSpace:
                 (doc.doctype, doc.workflow_state),
                 as_dict=True
             )
+
+            
 
             if not formulas:
                 frappe.log_error(f"No formulas found for workflow state: {doc.workflow_state} of {doc.doctype}", "Workflow Error")
@@ -87,6 +90,7 @@ class ErpSpace:
                     frappe.log_error(str(e), f"Error sharing document: {doc.name}")
 
             # Process workflow actions
+            
             ErpSpace.custom_process_workflow_actions(doc, doc.workflow_state)
 
     @staticmethod
@@ -100,14 +104,16 @@ class ErpSpace:
         if not next_possible_transitions:
             return
 
+        #frappe.throw(str(next_possible_transitions))
         enqueue(
             send_workflow_action_email,
             queue="short",
             doc=doc,
             transitions=next_possible_transitions,
-            enqueue_after_commit=True,
+            enqueue_after_commit=False,
             now=frappe.flags.in_test,
         )
+        #send_workflow_action_email(doc, next_possible_transitions)
 
 
 # Create a global instance of ErpSpace
