@@ -95,6 +95,19 @@ class ErpSpace:
                         action="Approve",                       # ou l'action courante si tu l'as
                         assigned_by=doc.owner
                     )
+
+                    ErpSpace.notify_user_for_workflow(
+                        user_email=email,
+                        ref_dt=doc.doctype,
+                        ref_dn=doc.name,
+                        action="Approve",
+                        state=getattr(doc, "workflow_state", None),
+                        share=True,
+                        via_in_app=True,
+                        via_email=True,
+                        upsert_todo=True,
+                        assigned_by=doc.owner
+                    )
                 except Exception as e:
                     frappe.log_error(str(e), f"Error sharing document: {doc.name}")
 
@@ -241,6 +254,105 @@ class ErpSpace:
                 updates["custom_workflow_state"] = getattr(doc, "workflow_state", "Submitted")
             for nm in names:
                 frappe.db.set_value("ToDo", nm, updates)
+
+    @staticmethod
+    def notify_user_for_workflow(
+        user_email: str,
+        ref_dt: str,
+        ref_dn: str,
+        *,
+        action: str | None = "Approve",
+        state: str | None = None,
+        subject: str | None = None,
+        message_html: str | None = None,
+        share: bool = True,
+        via_in_app: bool = True,
+        via_email: bool = True,
+        upsert_todo: bool = True,
+        assigned_by: str | None = None,
+    ):
+        """Envoie une notification complète à un utilisateur pour un document workflow.
+        - Partage le document (si share=True)
+        - Crée une Notification Log (in-app) anti-doublon
+        - Envoie un email (via_email=True)
+        - Upsert le ToDo pour ce user (upsert_todo=True)
+        """
+        try:
+            if not user_email:
+                return
+
+            # État courant si non fourni
+            if state is None:
+                try:
+                    if frappe.db.has_column(ref_dt, "workflow_state"):
+                        state = frappe.db.get_value(ref_dt, ref_dn, "workflow_state")
+                except Exception:
+                    state = None
+            state = state or ""
+
+            link = frappe.utils.get_url_to_form(ref_dt, ref_dn)
+            subject = subject or f"[{action or 'Action'}] {ref_dt} {ref_dn} — action requise"
+            # Contenu email/in-app
+            message_html = message_html or f"""
+                <p>Le document <b>{frappe.utils.escape_html(ref_dn)}</b> requiert votre action : <b>{frappe.utils.escape_html(action or 'Action')}</b>.</p>
+                <p>État : <b>{frappe.utils.escape_html(state)}</b></p>
+                <p><a href="{link}">Ouvrir le document</a></p>
+            """
+
+            # 1) Share idempotent
+            if share:
+                exists = frappe.db.exists("DocShare", {
+                    "share_doctype": ref_dt,
+                    "share_name": ref_dn,
+                    "user": user_email
+                })
+                if not exists:
+                    frappe.share.add_docshare(
+                        ref_dt, ref_dn, user_email,
+                        submit=1, flags={"ignore_share_permission": True}
+                    )
+
+            # 2) Notification in-app (anti-doublon sur 5 minutes)
+            if via_in_app:
+                dup = frappe.db.sql(
+                    """
+                    SELECT name FROM `tabNotification Log`
+                    WHERE for_user=%s AND document_type=%s AND document_name=%s
+                    AND subject=%s AND creation > (NOW() - INTERVAL 5 MINUTE)
+                    LIMIT 1
+                    """,
+                    (user_email, ref_dt, ref_dn, subject),
+                    as_dict=True
+                )
+                if not dup:
+                    frappe.get_doc({
+                        "doctype": "Notification Log",
+                        "subject": subject,
+                        "email_content": message_html,
+                        "for_user": user_email,
+                        "type": "Assignment",
+                        "document_type": ref_dt,
+                        "document_name": ref_dn,
+                    }).insert(ignore_permissions=True)
+
+            # 3) Email (asynchrone, post-commit)
+            if via_email:
+                frappe.sendmail(
+                    recipients=[user_email],
+                    subject=subject,
+                    message=message_html,
+                    delayed=True  # enqueue après commit
+                )
+
+            # 4) Upsert du ToDo pour ce user/doc
+            if upsert_todo:
+                ErpSpace.upsert_single_todo_for_workflow_action(
+                    user_email, ref_dt, ref_dn,
+                    state=state, action=action, assigned_by=assigned_by or frappe.session.user
+                )
+
+        except Exception as e:
+            frappe.log_error(str(e), "notify_user_for_workflow")
 
 
 # Create a global instance of ErpSpace
