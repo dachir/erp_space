@@ -96,18 +96,20 @@ class ErpSpace:
                         assigned_by=doc.owner
                     )
 
-                    ErpSpace.notify_user_for_workflow(
-                        user_email=email,
-                        ref_dt=doc.doctype,
-                        ref_dn=doc.name,
-                        action="Approve",
-                        state=getattr(doc, "workflow_state", None),
-                        share=True,
-                        via_in_app=True,
-                        via_email=True,
-                        upsert_todo=True,
-                        assigned_by=doc.owner
-                    )
+                    doc.send_email(email, doc.doctype, doc.docname)
+
+                    #ErpSpace.notify_user_for_workflow(
+                    #    user_email=email,
+                    #    ref_dt=doc.doctype,
+                    #   ref_dn=doc.name,
+                    #    action="Approve",
+                    #    state=getattr(doc, "workflow_state", None),
+                    #    share=True,
+                    #    via_in_app=True,
+                    #    via_email=True,
+                    #    upsert_todo=True,
+                    #    assigned_by=doc.owner
+                    #)
                 except Exception as e:
                     frappe.log_error(str(e), f"Error sharing document: {doc.name}")
 
