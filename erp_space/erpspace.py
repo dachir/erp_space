@@ -1,4 +1,5 @@
 import frappe
+from frappe.utils import nowdate
 from frappe.utils.background_jobs import enqueue
 from frappe.model.workflow import get_workflow_safe_globals
 from frappe.model.workflow import get_workflow_name
@@ -38,29 +39,31 @@ class ErpSpace:
     def share_doc(doc):
         
         """Share a document with users based on workflow state."""
-        if doc.workflow_state not in ["Draft", "Rejected"]:
+        if doc.workflow_state not in ["Draft", "Rejected", "Approved", None]:
             # Fetch custom role formula
             formulas = frappe.db.sql(
                 """
-                SELECT t.custom_role_formula, t.custom_role
+                SELECT t.custom_role_formula, t.custom_role, t.allowed
                 FROM `tabWorkflow Transition` t 
-                WHERE t.parent = %s AND t.state = %s AND t.action = 'Approve'
+                WHERE t.parent = %s AND t.state = %s AND t.action IN ('Approve')
                 """,
                 (doc.doctype, doc.workflow_state),
                 as_dict=True
             )
 
             
-
+            role = None
             if not formulas:
                 frappe.log_error(f"No formulas found for workflow state: {doc.workflow_state} of {doc.doctype}", "Workflow Error")
                 return
 
-            # Evaluate the formula with restricted globals
-            role = formulas[0].get("custom_role") or frappe.safe_eval(
-                formulas[0].get("custom_role_formula", ""),
-                get_workflow_safe_globals(), dict(doc=doc.as_dict())
-            )
+            if len(formulas) >= 1 and not formulas[0].get("custom_role_formula"):
+                role = formulas[0].get("allowed") 
+            else:
+                role = formulas[0].get("custom_role") or frappe.safe_eval(
+                    formulas[0].get("custom_role_formula", ""),
+                    get_workflow_safe_globals(), dict(doc=doc.as_dict())
+                )
 
             if not role:
                 frappe.log_error(f"Unable to determine role for workflow state: {doc.workflow_state} of {doc.doctype}", "Workflow Error")
@@ -85,13 +88,19 @@ class ErpSpace:
                     frappe.share.add_docshare(
                         doc.doctype, doc.name, email, submit=1, flags={"ignore_share_permission": True}
                     )
-                    #SErpSpace.send_email(email, doc.doctype, doc.name)
+
+                    ErpSpace.upsert_single_todo_for_workflow_action(
+                        email, doc.doctype, doc.name,
+                        state=getattr(doc, "workflow_state", None),
+                        action="Approve",                       # ou l'action courante si tu l'as
+                        assigned_by=doc.owner
+                    )
                 except Exception as e:
                     frappe.log_error(str(e), f"Error sharing document: {doc.name}")
 
             # Process workflow actions
-            
             ErpSpace.custom_process_workflow_actions(doc, doc.workflow_state)
+            #ErpSpace.close_previous_state_todos_on_state_change(doc)
 
     @staticmethod
     def custom_process_workflow_actions(doc, state):
@@ -114,6 +123,124 @@ class ErpSpace:
             now=frappe.flags.in_test,
         )
         #send_workflow_action_email(doc, next_possible_transitions)
+
+
+    @staticmethod
+    def upsert_single_todo_for_workflow_action(
+        user_email: str,
+        ref_dt: str,
+        ref_dn: str,
+        state: str | None = None,
+        action: str | None = None,
+        assigned_by: str | None = None,
+    ):
+        """Un seul ToDo par (document, utilisateur). Idempotent.
+        - Ouvre/crée le ToDo si l'utilisateur doit agir (selon l'état courant)
+        - Met à jour description et custom_workflow_state
+        """
+        try:
+            if not user_email:
+                return
+
+            # Récupère l'état courant si non fourni
+            if state is None and frappe.db.has_column(ref_dt, "workflow_state"):
+                state = frappe.db.get_value(ref_dt, ref_dn, "workflow_state")
+            state = state or ""
+
+            action = action or "Approve"
+            desc = f"[{action}] {ref_dt} {ref_dn} awaits your approval (state: {state})"
+
+            # ToDo existant pour CE user & CE document
+            existing = frappe.get_all(
+                "ToDo",
+                filters={
+                    "reference_type": ref_dt,
+                    "reference_name": ref_dn,
+                    "allocated_to": user_email,
+                },
+                fields=["name", "status", "custom_workflow_state"],
+                order_by="creation asc",
+            )
+
+            if not existing:
+                todo = frappe.get_doc({
+                    "doctype": "ToDo",
+                    "description": desc,
+                    "allocated_to": user_email,
+                    "reference_type": ref_dt,
+                    "reference_name": ref_dn,
+                    "priority": "Medium",
+                    "date": nowdate(),
+                    "assigned_by": assigned_by or frappe.session.user,
+                    "status": "Open",
+                })
+                if frappe.db.has_column("ToDo", "custom_workflow_state"):
+                    todo.custom_workflow_state = state
+                todo.insert(ignore_permissions=True)
+            else:
+                # canonical ToDo pour ce user/doc
+                name = existing[0]["name"]
+                updates = {"description": desc, "status": "Open"}
+                if frappe.db.has_column("ToDo", "custom_workflow_state"):
+                    updates["custom_workflow_state"] = state
+                frappe.db.set_value("ToDo", name, updates)
+
+                # ferme d'éventuels doublons résiduels
+                for t in existing[1:]:
+                    if t["status"] != "Closed":
+                        frappe.db.set_value("ToDo", t["name"], "status", "Closed")
+
+        except Exception as e:
+            frappe.log_error(str(e), "upsert_single_todo_for_workflow_action")
+
+
+    @staticmethod
+    def close_previous_state_todos_on_state_change(doc, method=None):
+        # ignore ToDo lui-même
+        if doc.doctype == "ToDo":
+            return
+
+        # Besoin du précédent état : get_doc_before_save() (Frappe v13+)
+        prev = getattr(doc, "get_doc_before_save", lambda: None)()
+        if not prev:
+            return
+
+        prev_state = getattr(prev, "workflow_state", None)
+        new_state = getattr(doc, "workflow_state", None)
+
+        if prev_state is None or new_state is None or prev_state == new_state:
+            return
+
+        # Fermer tous les ToDos ouverts qui étaient sur l'ancien état
+        todos = frappe.get_all(
+            "ToDo",
+            filters={
+                "reference_type": doc.doctype,
+                "reference_name": doc.name,
+                "status": ["!=", "Closed"],
+            },
+            fields=["name", "custom_workflow_state"],
+        )
+        for t in todos:
+            t_state = t.get("custom_workflow_state") or ""
+            if t_state != (new_state or ""):
+                frappe.db.set_value("ToDo", t["name"], "status", "Closed")
+
+    @staticmethod
+    def close_todos_on_submit(doc, method=None):
+        if doc.doctype == "ToDo":
+            return
+        names = frappe.get_all(
+            "ToDo",
+            filters={"reference_type": doc.doctype, "reference_name": doc.name, "status": ["!=", "Closed"]},
+            pluck="name",
+        )
+        if names:
+            updates = {"status": "Closed"}
+            if frappe.db.has_column("ToDo", "custom_workflow_state"):
+                updates["custom_workflow_state"] = getattr(doc, "workflow_state", "Submitted")
+            for nm in names:
+                frappe.db.set_value("ToDo", nm, updates)
 
 
 # Create a global instance of ErpSpace
