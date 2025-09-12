@@ -157,6 +157,15 @@ class ErpSpace:
             if not user_email:
                 return
 
+            if frappe.db.exists("ToDo", {
+                "reference_type": ref_dt,
+                "reference_name": ref_dn,
+                "allocated_to": user_email,
+                "custom_workflow_state": state
+            }):
+                # Ne pas rouvrir un ToDo fermé
+                return
+
             # Récupère l'état courant si non fourni
             if state is None and frappe.db.has_column(ref_dt, "workflow_state"):
                 state = frappe.db.get_value(ref_dt, ref_dn, "workflow_state")
