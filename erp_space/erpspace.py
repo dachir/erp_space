@@ -24,6 +24,13 @@ class ErpSpace:
         raise Exception(f"Function '{name}' is not registered in erpspace.")
 
     @staticmethod
+    def on_workflow_action_on_update(doc, method=None):
+        # ferme les ToDos de l'ancien état si l'état a changé
+        ErpSpace.close_previous_state_todos_on_state_change(doc, method)
+        # ferme aussi si Rejected
+        ErpSpace.close_todos_on_rejected(doc, method)
+
+    @staticmethod
     def send_email(email, doctype, docname):
         """Send an email notification."""
         frappe.sendmail(
