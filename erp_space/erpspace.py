@@ -37,7 +37,6 @@ class ErpSpace:
 
     @staticmethod
     def share_doc(doc):
-        
         """Share a document with users based on workflow state."""
         if doc.workflow_state not in ["Draft", "Rejected", "Approved", None]:
             # Fetch custom role formula
@@ -51,14 +50,13 @@ class ErpSpace:
                 as_dict=True
             )
 
-            
             role = None
             if not formulas:
                 frappe.log_error(f"No formulas found for workflow state: {doc.workflow_state} of {doc.doctype}", "Workflow Error")
                 return
 
             if len(formulas) >= 1 and not formulas[0].get("custom_role_formula"):
-                role = formulas[0].get("allowed") 
+                role = formulas[0].get("allowed")
             else:
                 role = formulas[0].get("custom_role") or frappe.safe_eval(
                     formulas[0].get("custom_role_formula", ""),
@@ -96,20 +94,22 @@ class ErpSpace:
                         assigned_by=doc.owner
                     )
 
-                    doc.send_email(email, doc.doctype, doc.docname)
+                    # ✅ correction: on utilise la méthode statique + doc.name
+                    ErpSpace.send_email(email, doc.doctype, doc.name)
 
-                    #ErpSpace.notify_user_for_workflow(
-                    #    user_email=email,
-                    #    ref_dt=doc.doctype,
-                    #   ref_dn=doc.name,
-                    #    action="Approve",
-                    #    state=getattr(doc, "workflow_state", None),
-                    #    share=True,
-                    #    via_in_app=True,
-                    #    via_email=True,
-                    #    upsert_todo=True,
-                    #    assigned_by=doc.owner
-                    #)
+                    # Si tu veux passer par la méta-fonction de notif complète :
+                    # ErpSpace.notify_user_for_workflow(
+                    #     user_email=email,
+                    #     ref_dt=doc.doctype,
+                    #     ref_dn=doc.name,
+                    #     action="Approve",
+                    #     state=getattr(doc, "workflow_state", None),
+                    #     share=True,
+                    #     via_in_app=True,
+                    #     via_email=True,
+                    #     upsert_todo=True,
+                    #     assigned_by=doc.owner
+                    # )
                 except Exception as e:
                     frappe.log_error(str(e), f"Error sharing document: {doc.name}")
 
@@ -123,12 +123,11 @@ class ErpSpace:
         workflow = get_workflow_name(doc.get("doctype"))
         if not workflow:
             return
-        
+
         next_possible_transitions = get_next_possible_transitions(workflow, get_doc_workflow_state(doc), doc)
         if not next_possible_transitions:
             return
 
-        #frappe.throw(str(next_possible_transitions))
         enqueue(
             send_workflow_action_email,
             queue="short",
@@ -137,8 +136,6 @@ class ErpSpace:
             enqueue_after_commit=False,
             now=frappe.flags.in_test,
         )
-        #send_workflow_action_email(doc, next_possible_transitions)
-
 
     @staticmethod
     def upsert_single_todo_for_workflow_action(
@@ -149,21 +146,13 @@ class ErpSpace:
         action: str | None = None,
         assigned_by: str | None = None,
     ):
-        """Un seul ToDo par (document, utilisateur). Idempotent.
-        - Ouvre/crée le ToDo si l'utilisateur doit agir (selon l'état courant)
+        """Un seul ToDo par (document, utilisateur).
+        - Ouvre/crée le ToDo si l'utilisateur doit agir (état courant)
         - Met à jour description et custom_workflow_state
+        - Ferme les doublons éventuels
         """
         try:
             if not user_email:
-                return
-
-            if frappe.db.exists("ToDo", {
-                "reference_type": ref_dt,
-                "reference_name": ref_dn,
-                "allocated_to": user_email,
-                "custom_workflow_state": state
-            }):
-                # Ne pas rouvrir un ToDo fermé
                 return
 
             # Récupère l'état courant si non fourni
@@ -174,7 +163,43 @@ class ErpSpace:
             action = action or "Approve"
             desc = f"[{action}] {ref_dt} {ref_dn} awaits your approval (state: {state})"
 
-            # ToDo existant pour CE user & CE document
+            # 1) Existe-t-il déjà un ToDo EXACT pour (doc, user, état) ?
+            same_key = frappe.get_all(
+                "ToDo",
+                filters={
+                    "reference_type": ref_dt,
+                    "reference_name": ref_dn,
+                    "allocated_to": user_email,
+                    "custom_workflow_state": state
+                },
+                fields=["name", "status"],
+                order_by="creation asc",
+            )
+            if same_key:
+                name = same_key[0]["name"]
+                # si déjà ouvert, on rafraîchit la description
+                if same_key[0]["status"] != "Closed":
+                    frappe.db.set_value("ToDo", name, {
+                        "status": "Open",
+                        "description": desc
+                    })
+                # on ferme les autres ToDos du même user/doc (anciens états ou doublons)
+                others = frappe.get_all(
+                    "ToDo",
+                    filters={
+                        "reference_type": ref_dt,
+                        "reference_name": ref_dn,
+                        "allocated_to": user_email,
+                        "name": ["!=", name],
+                        "status": ["!=", "Closed"],
+                    },
+                    pluck="name",
+                )
+                for nm in others:
+                    frappe.db.set_value("ToDo", nm, "status", "Closed")
+                return
+
+            # 2) Sinon, on regarde s'il y a des ToDos pour ce user/doc
             existing = frappe.get_all(
                 "ToDo",
                 filters={
@@ -187,6 +212,7 @@ class ErpSpace:
             )
 
             if not existing:
+                # créer un ToDo
                 todo = frappe.get_doc({
                     "doctype": "ToDo",
                     "description": desc,
@@ -202,14 +228,14 @@ class ErpSpace:
                     todo.custom_workflow_state = state
                 todo.insert(ignore_permissions=True)
             else:
-                # canonical ToDo pour ce user/doc
+                # mettre à jour le plus ancien comme canon
                 name = existing[0]["name"]
                 updates = {"description": desc, "status": "Open"}
                 if frappe.db.has_column("ToDo", "custom_workflow_state"):
                     updates["custom_workflow_state"] = state
                 frappe.db.set_value("ToDo", name, updates)
 
-                # ferme d'éventuels doublons résiduels
+                # fermer tous les autres
                 for t in existing[1:]:
                     if t["status"] != "Closed":
                         frappe.db.set_value("ToDo", t["name"], "status", "Closed")
@@ -225,7 +251,6 @@ class ErpSpace:
             if doc.doctype == "ToDo":
                 return
 
-            # état courant + précédent pour éviter de fermer à chaque on_update
             prev = getattr(doc, "get_doc_before_save", lambda: None)()
             prev_status = getattr(prev, "status", None) if prev else None
             prev_state  = getattr(prev, "workflow_state", None) if prev else None
@@ -265,7 +290,6 @@ class ErpSpace:
         if doc.doctype == "ToDo":
             return
 
-        # Besoin du précédent état : get_doc_before_save() (Frappe v13+)
         prev = getattr(doc, "get_doc_before_save", lambda: None)()
         if not prev:
             return
@@ -344,7 +368,6 @@ class ErpSpace:
 
             link = frappe.utils.get_url_to_form(ref_dt, ref_dn)
             subject = subject or f"[{action or 'Action'}] {ref_dt} {ref_dn} — action requise"
-            # Contenu email/in-app
             message_html = message_html or f"""
                 <p>Le document <b>{frappe.utils.escape_html(ref_dn)}</b> requiert votre action : <b>{frappe.utils.escape_html(action or 'Action')}</b>.</p>
                 <p>État : <b>{frappe.utils.escape_html(state)}</b></p>
@@ -370,7 +393,7 @@ class ErpSpace:
                     """
                     SELECT name FROM `tabNotification Log`
                     WHERE for_user=%s AND document_type=%s AND document_name=%s
-                    AND subject=%s AND creation > (NOW() - INTERVAL 5 MINUTE)
+                      AND subject=%s AND creation > (NOW() - INTERVAL 5 MINUTE)
                     LIMIT 1
                     """,
                     (user_email, ref_dt, ref_dn, subject),
@@ -393,7 +416,7 @@ class ErpSpace:
                     recipients=[user_email],
                     subject=subject,
                     message=message_html,
-                    delayed=True  # enqueue après commit
+                    delayed=True
                 )
 
             # 4) Upsert du ToDo pour ce user/doc
