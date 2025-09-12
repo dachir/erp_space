@@ -208,6 +208,47 @@ class ErpSpace:
         except Exception as e:
             frappe.log_error(str(e), "upsert_single_todo_for_workflow_action")
 
+    @staticmethod
+    def close_todos_on_rejected(doc, method=None):
+        """Ferme tous les ToDos liés dès que le document passe à Rejected.
+        Gère soit doc.status == 'Rejected', soit workflow_state == 'Rejected'."""
+        try:
+            if doc.doctype == "ToDo":
+                return
+
+            # état courant + précédent pour éviter de fermer à chaque on_update
+            prev = getattr(doc, "get_doc_before_save", lambda: None)()
+            prev_status = getattr(prev, "status", None) if prev else None
+            prev_state  = getattr(prev, "workflow_state", None) if prev else None
+
+            new_status = getattr(doc, "status", None)
+            new_state  = getattr(doc, "workflow_state", None)
+
+            newly_rejected = (
+                (new_status == "Rejected" and prev_status != "Rejected") or
+                (new_state  == "Rejected" and prev_state  != "Rejected")
+            )
+            if not newly_rejected:
+                return
+
+            names = frappe.get_all(
+                "ToDo",
+                filters={
+                    "reference_type": doc.doctype,
+                    "reference_name": doc.name,
+                    "status": ["!=", "Closed"],
+                },
+                pluck="name",
+            )
+            if names:
+                updates = {"status": "Closed"}
+                if frappe.db.has_column("ToDo", "custom_workflow_state"):
+                    updates["custom_workflow_state"] = "Rejected"
+                for nm in names:
+                    frappe.db.set_value("ToDo", nm, updates)
+
+        except Exception as e:
+            frappe.log_error(str(e), "close_todos_on_rejected")
 
     @staticmethod
     def close_previous_state_todos_on_state_change(doc, method=None):
