@@ -62,13 +62,14 @@ class ErpSpace:
                 frappe.log_error(f"No formulas found for workflow state: {doc.workflow_state} of {doc.doctype}", "Workflow Error")
                 return
 
-            if len(formulas) >= 1 and not formulas[0].get("custom_role_formula"):
-                role = formulas[0].get("allowed")
-            else:
-                role = formulas[0].get("custom_role") or frappe.safe_eval(
-                    formulas[0].get("custom_role_formula", ""),
-                    get_workflow_safe_globals(), dict(doc=doc.as_dict())
-                )
+            if len(formulas) > 1:
+                if not formulas[0].get("custom_role_formula"):
+                    role = formulas[0].get("allowed") or formulas[0].get("custom_role")
+                else:
+                    role = formulas[0].get("custom_role") or frappe.safe_eval(
+                        formulas[0].get("custom_role_formula", ""),
+                        get_workflow_safe_globals(), dict(doc=doc.as_dict())
+                    )
 
             if not role:
                 frappe.log_error(f"Unable to determine role for workflow state: {doc.workflow_state} of {doc.doctype}", "Workflow Error")
