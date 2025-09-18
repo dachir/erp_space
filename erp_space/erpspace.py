@@ -62,7 +62,7 @@ class ErpSpace:
                 frappe.log_error(f"No formulas found for workflow state: {doc.workflow_state} of {doc.doctype}", "Workflow Error")
                 return
 
-            if len(formulas) > 1:
+            if len(formulas) >= 1:
                 if not formulas[0].get("custom_role_formula"):
                     role = formulas[0].get("allowed") or formulas[0].get("custom_role")
                 else:
