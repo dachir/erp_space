@@ -89,37 +89,38 @@ class ErpSpace:
 
             # Share the document and send emails
             for email_entry in emails:
-                email = email_entry.get("email")
-                try:
-                    frappe.share.add_docshare(
-                        doc.doctype, doc.name, email, submit=1, flags={"ignore_share_permission": True}
-                    )
+                if email != "Administrator":
+                    email = email_entry.get("email")
+                    try:
+                        frappe.share.add_docshare(
+                            doc.doctype, doc.name, email, submit=1, flags={"ignore_share_permission": True}
+                        )
 
-                    ErpSpace.upsert_single_todo_for_workflow_action(
-                        email, doc.doctype, doc.name,
-                        state=getattr(doc, "workflow_state", None),
-                        action="Approve",                       # ou l'action courante si tu l'as
-                        assigned_by=doc.owner
-                    )
+                        ErpSpace.upsert_single_todo_for_workflow_action(
+                            email, doc.doctype, doc.name,
+                            state=getattr(doc, "workflow_state", None),
+                            action="Approve",                       # ou l'action courante si tu l'as
+                            assigned_by=doc.owner
+                        )
 
-                    # ✅ correction: on utilise la méthode statique + doc.name
-                    ErpSpace.send_email(email, doc.doctype, doc.name)
+                        # ✅ correction: on utilise la méthode statique + doc.name
+                        ErpSpace.send_email(email, doc.doctype, doc.name)
 
-                    # Si tu veux passer par la méta-fonction de notif complète :
-                    # ErpSpace.notify_user_for_workflow(
-                    #     user_email=email,
-                    #     ref_dt=doc.doctype,
-                    #     ref_dn=doc.name,
-                    #     action="Approve",
-                    #     state=getattr(doc, "workflow_state", None),
-                    #     share=True,
-                    #     via_in_app=True,
-                    #     via_email=True,
-                    #     upsert_todo=True,
-                    #     assigned_by=doc.owner
-                    # )
-                except Exception as e:
-                    frappe.log_error(str(e), f"Error sharing document: {doc.name}")
+                        # Si tu veux passer par la méta-fonction de notif complète :
+                        # ErpSpace.notify_user_for_workflow(
+                        #     user_email=email,
+                        #     ref_dt=doc.doctype,
+                        #     ref_dn=doc.name,
+                        #     action="Approve",
+                        #     state=getattr(doc, "workflow_state", None),
+                        #     share=True,
+                        #     via_in_app=True,
+                        #     via_email=True,
+                        #     upsert_todo=True,
+                        #     assigned_by=doc.owner
+                        # )
+                    except Exception as e:
+                        frappe.log_error(str(e), f"Error sharing document: {doc.name}")
 
             # Process workflow actions
             ErpSpace.custom_process_workflow_actions(doc, doc.workflow_state)
