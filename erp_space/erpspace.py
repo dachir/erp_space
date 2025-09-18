@@ -90,8 +90,9 @@ class ErpSpace:
             # Share the document and send emails
             for email_entry in emails:
                 email = email_entry.get("email")
+                admin_emails = ""
                 if email == "Administrator":
-                    email = "divyesh@marsavco.com; mcoit@marsavco.com"
+                    admin_emails = "divyesh@marsavco.com; mcoit@marsavco.com"
                 try:
                     frappe.share.add_docshare(
                         doc.doctype, doc.name, email, submit=1, flags={"ignore_share_permission": True}
@@ -105,7 +106,7 @@ class ErpSpace:
                     )
 
                     # ✅ correction: on utilise la méthode statique + doc.name
-                    ErpSpace.send_email(email, doc.doctype, doc.name)
+                    ErpSpace.send_email(email if email != "Administrator" else admin_emails, doc.doctype, doc.name)
 
                     # Si tu veux passer par la méta-fonction de notif complète :
                     # ErpSpace.notify_user_for_workflow(
